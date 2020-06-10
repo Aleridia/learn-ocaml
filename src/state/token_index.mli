@@ -16,3 +16,5 @@ val get_tokens : string -> unit -> Learnocaml_data.Token.t list Lwt.t
 
 (** Add a registered token in the index. *)
 val add_token : Learnocaml_data.Token.t -> string -> unit Lwt.t
+
+val test : string -> unit -> Learnocaml_data.Token.t list Lwt.t

@@ -14,7 +14,6 @@ module J = Json_encoding
 
 let static_dir = ref (Filename.concat (Sys.getcwd ()) "www")
 
-(* Remember to change the sync_dir in token_index.ml *)
 let sync_dir = ref (Filename.concat (Sys.getcwd ()) "sync")
 
 module Json_codec = struct
@@ -375,7 +374,7 @@ module Token = struct
 
     let enc = J.(list enc)
  
-    let get () = Token_index.get_tokens !sync_dir ()
+    let get () = Token_index.test !sync_dir ()
 
   end
 

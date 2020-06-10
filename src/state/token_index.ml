@@ -2,9 +2,8 @@ open Yojson
 open Lwt
 open Learnocaml_data
 
-
-let token_file = "sync/token.json"
-let oauth_file = "sync/oauth.json"
+let token_file = "token.json"
+let oauth_file = "oauth.json"
 
 (* Unlocked *)
 let mutex_token = Lwt_mutex.create ()
@@ -14,11 +13,9 @@ let cast_list l = `List l
 let cast_assoc a = `Assoc a
 let cast_list_assoc a = `Assoc [a]
 
-let string_to_json (value:string) = (`String value : Yojson.Basic.t)
+let cast_string (value:string) = (`String value : Yojson.Basic.t)
 
-let token_to_string l = List.map (fun t -> Token.to_string t) l
-
-let string_to_token l = List.map (fun t -> Token.parse t) l
+let string_to_token l = List.map Token.parse l
 
 let get (sync_dir : string) () =
       let base = sync_dir in
@@ -59,20 +56,33 @@ let write_file file mutex data =
 
 let create_index (sync_dir : string) =
   let l = get sync_dir () in
-  let data =  l >|= List.map string_to_json >|= cast_list in
-  data >>= write_file token_file mutex_token
+  let data =  l >|= List.map cast_string >|= cast_list in
+  data >>= write_file (sync_dir ^ "/" ^  token_file) mutex_token
 
+(* Copyright https://github.com/astrada/gapi-ocaml 
+   Return a secret hexa encoded *)
+let gen_secret len =
+  let hexa_encode s =
+    let transform = Cryptokit.Hexa.encode () in
+    transform#put_string s;
+    transform#finish;
+    transform#get_string
+  in
+  let secret = hexa_encode @@ Cryptokit.Random.string Cryptokit.Random.secure_rng len in
+  Printf.printf "Auto-generated secret : %s\n" secret;
+  secret
+  
 
 (* Create oauth's log file and fill it with DEFAULT values *)
-let create_oauth =
-  let data = `Assoc [("DEFAULT", cast_list @@ List.map string_to_json ["NONCE1";"NONCE2";"NONCE3"])] in
-  write_file oauth_file mutex_oauth data
+let create_oauth ?nonce:(n="") (sync_dir:string) secret =
+  let data = `Assoc [(secret, cast_list @@ [cast_string n])] in
+  write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth data
 
 let test = write_file 
 
 let create_file (sync_dir : string) = function
   | "index" -> create_index sync_dir
-  | "oauth" -> create_oauth 
+  | "oauth" -> create_oauth sync_dir @@ gen_secret 32
   | _ -> Lwt.return_unit
 
 (* if file doesn't exist, create it *)
@@ -82,58 +92,143 @@ let get_file name file (sync_dir : string) =
           Lwt.return @@ Yojson.Basic.from_file name
     with
           (* Note: this error handling could be adapted later on, to be "more conservative"? (this does not matter now, as the "sync/token.json" file is not critical and can be regenerated) *)
-      Json_error _ -> create_file file sync_dir >|= fun () -> Yojson.Basic.from_file name end
+      Json_error _ -> create_file sync_dir file >|= fun () -> Yojson.Basic.from_file name end
   else
-      create_file file sync_dir  >|= fun () -> Yojson.Basic.from_file name
-
+      create_file sync_dir file  >|= fun () -> Yojson.Basic.from_file name
 
 (* Token list *)
 let get_tokens (sync_dir : string) () =
-  let json = get_file token_file "index" sync_dir in
+  let json = get_file (sync_dir ^ "/" ^  token_file) "index" sync_dir in
   json >|= Yojson.Basic.Util.to_list >|= List.map Yojson.Basic.Util.to_string >|= string_to_token
 
 
 let add_token token (sync_dir : string) =
-  let token = string_to_json @@ Token.to_string token in
-  let json_list = get_file token_file "index" sync_dir >|=  Yojson.Basic.Util.to_list >>= fun l -> Lwt.return @@ token::l in
-  json_list >|= cast_list >>= write_file token_file mutex_token
+  let token = cast_string @@ Token.to_string token in
+  let json_list = get_file (sync_dir ^ "/" ^  token_file) "index" sync_dir >|=  Yojson.Basic.Util.to_list >>= fun l -> Lwt.return @@ token::l in
+  json_list >|= cast_list >>= write_file (sync_dir ^ "/" ^  token_file) mutex_token
 
 
 
     (************ OAuth part *******************)
 
-(** TODO **)
-let gen_secret = "secret"
 
 (* add_oauth gen_secret *)
 let change_secret secret (sync_dir:string) =
-  let assoc = get_file oauth_file "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
-  let added = assoc >>= fun l -> Lwt.return @@ (secret, cast_list []) :: l in 
-  added >|= cast_assoc >>= write_file oauth_file mutex_oauth
+  let assoc = get_file (sync_dir ^ "/" ^  oauth_file) "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
+  let added = assoc >>= fun l -> Lwt.return @@ (secret, cast_list [cast_string ""]) :: l in 
+  added >|= cast_assoc >>= write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth
 
 
 let get_first_oauth (sync_dir:string) =
-  let assoc = get_file oauth_file "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
+  let assoc = get_file (sync_dir ^ "/" ^  oauth_file) "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
   assoc >|= List.hd
 
 let get_current_secret (sync_dir:string) = get_first_oauth sync_dir >|= fst
 
 (* Delete all secrets + nonce associated excepted the current secret *)
-let purge_oauth (sync_dir:string) = get_first_oauth sync_dir >|= cast_list_assoc >|= write_file oauth_file mutex_oauth
+let purge_oauth (sync_dir:string) = get_first_oauth sync_dir >|= cast_list_assoc >|= write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth
 
-(*let add_nonce nonce (sync_dir:string) =
-  let assoc = get_file oauth_file "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
-  let ajout assoc = assoc >|= fun l ->
+(* Add nonce to the current secret *)
+let add_nonce (nonce:string) (sync_dir:string) =
+  let assoc = get_file (sync_dir ^ "/" ^  oauth_file) "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
+  assoc >>= fun l ->
   match l with
-  |x::l -> Lwt.return @@ (nonce :: (Yojson.Basic.Util.to_list @@ snd x))::l
-  | [] -> l in
-  ajout assoc*)
+  | x::reste -> let listex = Yojson.Basic.Util.to_list @@ snd x in
+                let nonce = cast_string nonce in
+                let assoc = (fst x, cast_list @@ nonce::listex) in
+                let data = cast_assoc @@ assoc :: reste in
+                write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth data
+  | _ -> create_oauth ~nonce:nonce sync_dir @@ gen_secret 32 (*If nothing, then gen a secret and add the nonce *)
 
 
-  (* Vérifier nonce *)
+(* Check the nonce for the current secret *)
+let check_nonce (nonce:string) (sync_dir:string) =
+  let assoc =  get_first_oauth sync_dir >|= snd >|= Yojson.Basic.Util.to_list >|= Yojson.Basic.Util.filter_string in
+  assoc >|= List.exists (fun e -> e = nonce) 
 
-  (* Poc : vérification de la signature et traitement *)
+
+(*********** OAuth signature **************)
+let oauth_signature_method = ref "HMAC-SHA1"
+
+ (* Renvoie la value d'une key dans une liste de couple de type (key,value) *)
+let rec get_value key =
+  function
+  | (k,v)::l -> if k = key then v
+            else get_value key l
+  | _ -> "Error"
+
+
+let verifier_oauth liste_args =
+  (* Traitement de la requête POST *)
+  get_value "oauth_signature" liste_args <> "Error"
+  && get_value "oauth_timestamp" liste_args <> "Error"
+  && get_value "oauth_nonce" liste_args <> "Error"
+  && get_value "oauth_version" liste_args <> "Error"
+  && get_value "oauth_consumer_key" liste_args <> "Error"
+  && get_value "oauth_signature_method" liste_args = !oauth_signature_method
+
+
+
+(* Based on gapi-ocaml 
+  This function will build a signature by using hmac_sha1 algorithm.*)
+let signature_oauth list_args http_method basic_uri secret =
+  let pair_encode = (* 1 : encode keys/values *)
+    List.map (
+        fun (k,v) -> (Netencoding.Url.encode ~plus:false k, Netencoding.Url.encode ~plus:false v))
+    @@ List.filter (fun (a,_) -> a <> "oauth_signature") list_args
+  in
+  let pair_sorted =   (* 2 : Sort by key *)
+    List.sort   
+      (fun (k1, v1) (k2,v2) ->
+        let i = compare k1 k2 in
+        if i = 0 then compare v1 v2 else i)
+      pair_encode
+  in 
+  let list_concat =  (* 3 : Form key=value&key2=value2*)
+    String.concat "&"
+    @@ List.map
+         (fun (k,v) -> k ^ "=" ^ v) pair_sorted
+  in  
+  let signature_base_string =     (* 4 : Add HTTP method and URI *)
+    Printf.sprintf "%s&%s&%s" (String.uppercase_ascii http_method) (Netencoding.Url.encode ~plus:false basic_uri) (Netencoding.Url.encode ~plus:false list_concat)
+  in
+  let signing_key = (Netencoding.Url.encode ~plus:false secret) ^ "&" in  (* 5 : Build signing_key *)
+  let encoding =                    
+    let hash = Cryptokit.MAC.hmac_sha1 signing_key in
+    let _ = hash#add_string signature_base_string in
+    let result = hash#result in
+    hash#wipe;
+    B64.encode result
+
+  in
+  encoding 
+
+let url = "http://localhost:8000/launch"
+
+let traiter_requete req (sync_dir:string) =
+  let liste_args = Netencoding.Url.dest_url_encoded_parameters req in
+  if get_value "oauth_signature_method" liste_args <> !oauth_signature_method then (* Si ce n'est pas HMAC-SHA1 *)
+    (*Server.respond_error ~status:`Not_implemented ~body:(sprintf "Try with %s oauth signature method" !oauth_signature_method) ()*)
+    Lwt.return_unit
+  else
+    begin
+      if not (verifier_oauth liste_args) then
+        (*Server.respond_error ~status:`Bad_request ~body:"Missing oauth args" ()*)
+        Lwt.return_unit
+      else 
+        (* Vérifier la signature *)
+        let fun_perso = get_current_secret sync_dir >|= signature_oauth liste_args "post" url in
+        fun_perso >>= fun s ->
+           if s = get_value "oauth_signature" liste_args then 
+          (*Server.respond_string ~status:`OK ~body:("Signature OK (" ^ fun_perso ^ " et recue : " ^ !oauth_signature ^ ")") ()*)
+          Lwt.return_unit
+        else
+    (*Server.respond_string ~status:`Unauthorized ~body:"OAuth signature does not match" ()*)
+          Lwt.return_unit
+    end
+
 
 let test sync_dir () =
-  (* purge_oauth sync_dir;*)
-  get_tokens sync_dir ()
+ get_current_secret sync_dir >>= fun _ -> 
+ get_tokens sync_dir ()
+
