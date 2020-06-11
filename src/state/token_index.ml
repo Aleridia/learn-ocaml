@@ -233,10 +233,6 @@ let signature_oauth list_args http_method basic_uri secret =
 
 
  (* Moodle related *)
-
- (* Exist *)
-
-
  let create_moodle_user (sync_dir:string) (id:string) =
    let assoc = get_file (sync_dir ^ "/" ^ moodle_file) "moodle" sync_dir >|= Yojson.Basic.Util.to_assoc in
    assoc >>= fun l ->
