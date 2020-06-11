@@ -8,7 +8,6 @@
 
 open Lwt.Infix
 open Learnocaml_data
-open Token_index
 
 module J = Json_encoding
 
@@ -293,10 +292,9 @@ module Token = struct
 
   include Token
 
-  let path token =
-    Filename.concat !sync_dir (Token.to_path token)
+  let path token =  Token_index.path !sync_dir token
 
-  let save_path token = Filename.concat (path token) "save.json"
+  let save_path token = Token_index.save_path !sync_dir token
 
   let find_save token =
     let save = save_path token in
@@ -319,20 +317,7 @@ module Token = struct
     if is_teacher token then exists token
     else Lwt.return_false
 
-  let create_gen rnd =
-    let rec aux () =
-      let token = rnd () in
-      let file = save_path token in
-      Lwt_utils.mkdir_p ~perm:0o700 (Filename.dirname file) >>= fun () ->
-      Lwt.catch (fun () ->
-          Lwt_io.with_file ~mode:Lwt_io.Output ~perm:0o700 file
-            ~flags:Unix.([O_WRONLY; O_NONBLOCK; O_CREAT; O_EXCL])
-            (fun _chan -> Lwt.return token))
-      @@ function
-      | Unix.Unix_error (Unix.EEXIST, _, _) -> aux ()
-      | e -> Lwt.fail e
-    in
-    aux () >>= fun t -> Token_index.add_token t !sync_dir >|= fun _ -> t
+  let create_gen rnd = Token_index.create_gen rnd !sync_dir
 
   let register ?(allow_teacher=false) token =
     if not allow_teacher && is_teacher token then
@@ -347,8 +332,7 @@ module Token = struct
           Lwt.fail_with "token already exists"
       | e -> Lwt.fail e
 
-  let create_student () =
-    create_gen random
+  let create_student () = create_gen random
 
   let create_teacher () = create_gen random_teacher
 
