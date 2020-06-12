@@ -8,6 +8,7 @@
 
 open Learnocaml_data
 
+
 let version = Learnocaml_version.v
 
 type _ request =
@@ -148,6 +149,7 @@ module Conversions (Json: JSON_CODEC) = struct
       | Invalid_request _ ->
           str
 
+  
   let response_encode r = fst (response_codec r)
   let response_decode r = snd (response_codec r)
 
@@ -170,7 +172,6 @@ module Conversions (Json: JSON_CODEC) = struct
         get path
     | Version () ->
         get ["version"]
-
     | Nonce () ->
         get ["nonce"]
     | Create_token (secret_candiate, token, nick) ->
@@ -339,6 +340,9 @@ module Server (Json: JSON_CODEC) (Rh: REQUEST_HANDLER) = struct
                Static ["exercise.html"] |> k
            | _ ->
               Static ("static"::path) |> k)
+
+      | `POST _body, ("launch"::_path), _token -> Static ["launch.html"]  |> k
+                                   
       | `GET, ("description"::_path), _token ->
          (* match token with
           | None -> Invalid_request "Missing token" |> k *)
@@ -396,7 +400,6 @@ module Server (Json: JSON_CODEC) (Rh: REQUEST_HANDLER) = struct
         | ["student-view.html"]
         | ["description.html"]
         | ["partition-view.html"]
-        | ["lti.html"]
         | ("js"|"fonts"|"icons"|"css"|"static") :: _ as path),
         _ ->
           Static path |> k

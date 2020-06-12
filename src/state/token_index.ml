@@ -1,6 +1,15 @@
+(* This file is part of Learn-OCaml.
+ *
+ * Copyright (C) 2020 Maxime Salvagnac
+ *
+ * Learn-OCaml is distributed under the terms of the MIT license. See the
+ * included LICENSE file for details. *)
+
 open Yojson
 open Lwt
 open Learnocaml_data
+
+let oauth_signature_method = ref "HMAC-SHA1"
 
 let token_file = "token.json"
 let oauth_file = "oauth.json"
@@ -14,11 +23,11 @@ let mutex_moodle = Lwt_mutex.create ()
 let cast_list l = `List l
 let cast_assoc a = `Assoc a
 let cast_list_assoc a = `Assoc [a]
-
 let cast_string (value:string) = (`String value : Yojson.Basic.t)
 
 let string_to_token l = List.map Token.parse l
 
+(* Return a token's list by checking all the files *)
 let get (sync_dir : string) () =
       let base = sync_dir in
       let ( / ) dir f = if dir = "" then f else Filename.concat dir f in
@@ -47,7 +56,6 @@ let get (sync_dir : string) () =
           else
             Lwt.return acc
         ) "" []
-
 
 let write_file file mutex data =
   Lwt_mutex.lock mutex >|= fun () ->
@@ -84,7 +92,6 @@ let create_oauth ?nonce:(n="") (sync_dir:string) secret =
   let data = `Assoc [(secret, cast_list @@ [cast_string n])] in
   write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth data
 
-let test = write_file 
 
 let create_file (sync_dir : string) = function
   | "index" -> create_index sync_dir
@@ -95,13 +102,13 @@ let create_file (sync_dir : string) = function
 (* if file doesn't exist, create it *)
 let get_file name file (sync_dir : string) =
   if Sys.file_exists name then begin
-      try 
+      try
         Lwt.return @@ Yojson.Basic.from_file name 
     with
           (* Note: this error handling could be adapted later on, to be "more conservative"? (this does not matter now, as the "sync/token.json" file is not critical and can be regenerated) *)
-      Json_error _ ->create_file sync_dir file >|= fun () -> Yojson.Basic.from_file name end
+      Json_error _ -> create_file sync_dir file >|= fun () -> Yojson.Basic.from_file name end
   else  
-      create_file sync_dir file  >|= fun () -> Yojson.Basic.from_file name 
+    create_file sync_dir file  >|= fun () -> Yojson.Basic.from_file name
 
 (* Token list *)
 let get_tokens (sync_dir : string) () =
@@ -116,10 +123,6 @@ let add_token token (sync_dir : string) =
 
 
 
-    (************ OAuth part *******************)
-
-
-(* add_oauth gen_secret *)
 let change_secret secret (sync_dir:string) =
   let assoc = get_file (sync_dir ^ "/" ^  oauth_file) "oauth" sync_dir >|= Yojson.Basic.Util.to_assoc in
   let added = assoc >>= fun l -> Lwt.return @@ (secret, cast_list [cast_string ""]) :: l in 
@@ -133,7 +136,7 @@ let get_first_oauth (sync_dir:string) =
 let get_current_secret (sync_dir:string) = get_first_oauth sync_dir >|= fst
 
 (* Delete all secrets + nonce associated excepted the current secret *)
-let purge_oauth (sync_dir:string) = get_first_oauth sync_dir >|= cast_list_assoc >|= write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth
+let purge_oauth (sync_dir:string) = get_first_oauth sync_dir >|= cast_list_assoc >>= write_file (sync_dir ^ "/" ^  oauth_file) mutex_oauth
 
 (* Add nonce to the current secret *)
 let add_nonce (nonce:string) (sync_dir:string) =
@@ -154,10 +157,7 @@ let check_nonce (nonce:string) (sync_dir:string) =
   assoc >|= List.exists (fun e -> e = nonce) 
 
 
-(*********** OAuth signature **************)
-let oauth_signature_method = ref "HMAC-SHA1"
-
-let rec get_value (key:string) list_args =
+let get_value (key:string) list_args =
   try
     snd @@ List.find (fun (k,_) -> k = key) list_args
   with
@@ -210,34 +210,33 @@ let signature_oauth list_args http_method basic_uri secret =
   in
   encoding 
 
-
-(* Create_gen things *)
- let path (sync_dir:string) token = Filename.concat sync_dir (Token.to_path token)
+(* Imported from learnocaml_store.ml *)
+let path token (sync_dir:string) = Filename.concat sync_dir (Token.to_path token)
  
- let save_path (sync_dir:string) token = Filename.concat (path sync_dir token) "save.json"
+let save_path token (sync_dir:string) = Filename.concat (path token sync_dir) "save.json"
 
- let create_gen rnd (sync_dir:string) =
-    let rec aux () =
-      let token = rnd () in
-      let file = save_path sync_dir token in
-      Lwt_utils.mkdir_p ~perm:0o700 (Filename.dirname file) >>= fun () ->
-      Lwt.catch (fun () ->
-          Lwt_io.with_file ~mode:Lwt_io.Output ~perm:0o700 file
-            ~flags:Unix.([O_WRONLY; O_NONBLOCK; O_CREAT; O_EXCL])
+let create_gen rnd (sync_dir:string) =
+  let rec aux () =
+    let token = rnd () in
+    let file = save_path token sync_dir in
+    Lwt_utils.mkdir_p ~perm:0o700 (Filename.dirname file) >>= fun () ->
+    Lwt.catch (fun () ->
+        Lwt_io.with_file ~mode:Lwt_io.Output ~perm:0o700 file
+          ~flags:Unix.([O_WRONLY; O_NONBLOCK; O_CREAT; O_EXCL])
             (fun _chan -> Lwt.return token))
-      @@ function
+    @@ function
       | Unix.Unix_error (Unix.EEXIST, _, _) -> aux ()
       | e -> Lwt.fail e
-    in
-    aux () >>= fun t -> add_token t sync_dir >|= fun _ -> t
+  in
+  aux () >>= fun t -> add_token t sync_dir >|= fun _ -> t
 
 
- (* Moodle related *)
- let create_moodle_user (sync_dir:string) (id:string) =
-   let assoc = get_file (sync_dir ^ "/" ^ moodle_file) "moodle" sync_dir >|= Yojson.Basic.Util.to_assoc in
-   assoc >>= fun l ->
-   match l with
-   | l ->
+(* Moodle related *)
+let create_moodle_user (id:string) (sync_dir:string) =
+  let assoc = get_file (sync_dir ^ "/" ^ moodle_file) "moodle" sync_dir >|= Yojson.Basic.Util.to_assoc in
+  assoc >>= fun l ->
+  match l with
+  | l ->
       try (* If the user is already registered *)
         Lwt.return @@ Token.parse @@ Yojson.Basic.Util.to_string @@ snd @@ List.find (fun (a,_) -> a = id) l
       with Not_found ->
@@ -246,47 +245,39 @@ let signature_oauth list_args http_method basic_uri secret =
         let data = list >|= cast_assoc in
         data >>= write_file (sync_dir ^ "/" ^  moodle_file) mutex_moodle >>= fun _ -> token
 
- 
- let get_moodle_user_token (sync_dir:string) (id:string) =
-   let assoc = get_file (sync_dir ^ "/" ^ moodle_file) "moodle" sync_dir >|= Yojson.Basic.Util.to_assoc in
-   let list_string = assoc >|= List.map (fun (a,b) -> (a, Yojson.Basic.Util.to_string b)) in
-   let list_token = list_string >|= List.filter (fun (a,_) -> a = id) in
-   list_token >>= fun l ->
-   match l with
-   | x::_ -> Printf.printf "DONNER\n";Lwt.return @@ Token.parse @@ snd x
-   | [] -> Printf.printf "CREE\n"; create_moodle_user sync_dir id
+
+(* If user does not exist, create it *)
+let get_moodle_user_token (id:string) (sync_dir:string) =
+  let assoc = get_file (sync_dir ^ "/" ^ moodle_file) "moodle" sync_dir >|= Yojson.Basic.Util.to_assoc in
+  let list_string = assoc >|= List.map (fun (a,b) -> (a, Yojson.Basic.Util.to_string b)) in
+  let list_token = list_string >|= List.filter (fun (a,_) -> a = id) in
+  list_token >>= fun l ->
+  match l with
+  | x::_ -> Lwt.return @@ Token.parse @@ snd x
+  | [] -> create_moodle_user id sync_dir
 
 
 
 (** Don't give the same oauth_consumer_key to differents LTI consumer **)
 (* Deal with the request to check OAuth autenticity and return Moodle user's token*)
 let process_request req (sync_dir:string) (url:string) =
-  let liste_args = Netencoding.Url.dest_url_encoded_parameters req in
-  if get_value "oauth_signature_method" liste_args <> !oauth_signature_method then
+  let list_args = Netencoding.Url.dest_url_encoded_parameters req in
+  if get_value "oauth_signature_method" list_args <> !oauth_signature_method then
     Lwt.return "Not implemented"
   else
     begin
-      if not (check_oauth_args liste_args) then
+      if not (check_oauth_args list_args) then
         Lwt.return "Missing args"
       else
-        check_nonce (get_value "oauth_nonce" liste_args) sync_dir >>= fun b ->
+        check_nonce (get_value "oauth_nonce" list_args) sync_dir >>= fun b ->
         if b then
           Lwt.return "Nonce already used"
         else
-          let check_signature = get_current_secret sync_dir >|= signature_oauth liste_args "post" url in
+          let check_signature = get_current_secret sync_dir >|= signature_oauth list_args "post" url in
           check_signature  >>= fun s ->
-          if s = get_value "oauth_signature" liste_args then
-            create_moodle_user sync_dir ((get_value "user_id" liste_args) ^ (get_value "oauth_consumer_key" liste_args)) >>= fun _ ->
+          if s = get_value "oauth_signature" list_args then
+            get_moodle_user_token ((get_value "user_id" list_args) ^ (get_value "oauth_consumer_key" list_args)) sync_dir  >>= fun _ ->
             Lwt.return "OAuth match"
           else
             Lwt.return "Wrong signature"
     end
-
-
-
-
-let test sync_dir () =
-  create_moodle_user sync_dir "3COMSUMER" >>= fun t1 ->
-  get_moodle_user_token sync_dir "3COMSUMER" >>= fun t2 ->
-  Printf.printf "%s == %s\n" (Token.to_string t1) (Token.to_string t2);
-  get_tokens sync_dir ()

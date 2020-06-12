@@ -292,9 +292,9 @@ module Token = struct
 
   include Token
 
-  let path token =  Token_index.path !sync_dir token
+  let path token =  Token_index.path token !sync_dir
 
-  let save_path token = Token_index.save_path !sync_dir token
+  let save_path token = Token_index.save_path token !sync_dir
 
   let find_save token =
     let save = save_path token in
@@ -358,7 +358,7 @@ module Token = struct
 
     let enc = J.(list enc)
  
-    let get () = Token_index.test !sync_dir ()
+    let get () = Token_index.get_tokens !sync_dir ()
 
   end
 

@@ -6,7 +6,6 @@
  * included LICENSE file for details. *)
 
 open Js_utils
-open Learnocaml_data
 open Learnocaml_common
 
 let id s = s, find_component s
